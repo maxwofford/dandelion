@@ -1,0 +1,1062 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>gloam</title>
+<style>
+* { margin: 0; padding: 0; }
+body { background: #000; overflow: hidden; }
+canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="drop" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:10;background:rgba(0,0,0,0.7)">
+  <div style="padding:60px;border:2px dashed #555;border-radius:16px;color:#aaa;font:20px monospace">drop .log file</div>
+</div>
+<div id="timeline" style="position:fixed;bottom:0;left:0;right:0;padding:8px 20px 12px;z-index:5;display:none">
+  <input type="range" id="slider" min="0" max="0" value="0" style="width:100%;cursor:pointer;accent-color:#b08040">
+  <div style="display:flex;justify-content:space-between;margin-top:4px">
+    <span id="tl-info" style="color:#887;font:12px monospace"></span>
+    <span id="tl-date" style="color:#887;font:12px monospace"></span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- background: twilight gradient              -->
+<!-- ═══════════════════════════════════════════ -->
+<script id="bg-vs" type="x-shader">#version 300 es
+layout(location=0) in vec2 a_pos;
+out vec2 v_uv;
+void main() {
+  v_uv = a_pos * 0.5 + 0.5;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}
+</script>
+<script id="bg-fs" type="x-shader">#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 o_color;
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+void main() {
+  vec3 top = vec3(0.02, 0.02, 0.09);
+  vec3 mid = vec3(0.06, 0.03, 0.07);
+  vec3 bot = vec3(0.05, 0.02, 0.02);
+  float y = v_uv.y;
+  vec3 col = y > 0.5 ? mix(mid, top, (y-0.5)*2.0) : mix(bot, mid, y*2.0);
+  col += (hash(v_uv * 200.0) - 0.5) * 0.012;
+  o_color = vec4(col, 1.0);
+}
+</script>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- nodes: SDF circles with layered glow       -->
+<!-- ═══════════════════════════════════════════ -->
+<script id="node-vs" type="x-shader">#version 300 es
+layout(location=0) in vec2 a_pos;
+layout(location=1) in vec2 a_offset;
+layout(location=2) in float a_radius;
+layout(location=3) in vec4 a_color;
+layout(location=4) in float a_age;
+uniform mat4 u_mvp;
+out vec2 v_uv;
+out vec4 v_color;
+out float v_age;
+void main() {
+  v_uv = a_pos;
+  v_color = a_color;
+  v_age = a_age;
+  vec2 world = a_offset + a_pos * a_radius * 2.0;
+  gl_Position = u_mvp * vec4(world, 0.0, 1.0);
+}
+</script>
+<script id="node-fs" type="x-shader">#version 300 es
+precision highp float;
+in vec2 v_uv;
+in vec4 v_color;
+in float v_age;
+out vec4 o_color;
+void main() {
+  float d = length(v_uv);
+  // solid opaque circle — bloom provides the glow
+  float circle = smoothstep(0.55, 0.42, d);
+  // wider halo feeds the bloom
+  float halo = exp(-d * 3.0) * 0.2;
+  float birth = smoothstep(0.0, 1.0, v_age);
+  float fade = 1.0 - smoothstep(0.8, 1.0, d);
+  float intensity = (circle + halo) * birth * fade;
+  vec3 col = mix(v_color.rgb, vec3(1.0, 0.97, 0.92), circle * 0.2);
+  o_color = vec4(col * intensity, 1.0);
+}
+</script>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- edges: glowing lines between nodes         -->
+<!-- ═══════════════════════════════════════════ -->
+<script id="edge-vs" type="x-shader">#version 300 es
+layout(location=0) in vec2 a_pos;
+layout(location=1) in vec2 a_p0;
+layout(location=2) in vec2 a_p1;
+layout(location=3) in vec3 a_color;
+layout(location=4) in float a_alpha;
+uniform mat4 u_mvp;
+out vec2 v_uv;
+out vec3 v_color;
+out float v_alpha;
+void main() {
+  v_uv = a_pos;
+  v_color = a_color;
+  v_alpha = a_alpha;
+  vec2 d = a_p1 - a_p0;
+  float len = length(d);
+  vec2 dir = len > 0.001 ? d / len : vec2(1.0, 0.0);
+  vec2 perp = vec2(-dir.y, dir.x);
+  float gw = 18.0;
+  vec2 center = (a_p0 + a_p1) * 0.5;
+  vec2 world = center + d * 0.5 * a_pos.x + perp * gw * a_pos.y;
+  gl_Position = u_mvp * vec4(world, 0.0, 1.0);
+}
+</script>
+<script id="edge-fs" type="x-shader">#version 300 es
+precision highp float;
+in vec2 v_uv;
+in vec3 v_color;
+in float v_alpha;
+out vec4 o_color;
+void main() {
+  float d = abs(v_uv.y);
+  float line = smoothstep(0.18, 0.04, d);
+  float glow = exp(-d * 2.5) * 0.25;
+  float intensity = (line + glow) * v_alpha;
+  o_color = vec4(v_color * intensity, 1.0);
+}
+</script>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- bloom: gaussian blur + composite           -->
+<!-- ═══════════════════════════════════════════ -->
+<script id="blur-fs" type="x-shader">#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_tex;
+uniform vec2 u_dir;
+out vec4 o_color;
+void main() {
+  vec4 sum = vec4(0.0);
+  float w[5] = float[5](0.227, 0.1945, 0.1216, 0.0541, 0.0162);
+  sum += texture(u_tex, v_uv) * w[0];
+  for (int i = 1; i < 5; i++) {
+    vec2 off = u_dir * float(i);
+    sum += texture(u_tex, v_uv + off) * w[i];
+    sum += texture(u_tex, v_uv - off) * w[i];
+  }
+  o_color = sum;
+}
+</script>
+<script id="blit-fs" type="x-shader">#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_tex;
+uniform float u_intensity;
+out vec4 o_color;
+void main() {
+  o_color = texture(u_tex, v_uv) * u_intensity;
+}
+</script>
+
+<script>
+// ═══════════════════════════════════════════════
+// gloam — demoscene git visualizer
+// ═══════════════════════════════════════════════
+
+// --- helpers ---
+function mkShader(gl, type, id) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, document.getElementById(id).textContent.trim());
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(id, gl.getShaderInfoLog(s)); return null;
+  }
+  return s;
+}
+function mkProgram(gl, vsId, fsId) {
+  const p = gl.createProgram();
+  gl.attachShader(p, mkShader(gl, gl.VERTEX_SHADER, vsId));
+  gl.attachShader(p, mkShader(gl, gl.FRAGMENT_SHADER, fsId));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(p)); return null;
+  }
+  return p;
+}
+
+// --- math ---
+function mat4Ortho(l, r, b, t) {
+  return new Float32Array([
+    2/(r-l),0,0,0, 0,2/(t-b),0,0, 0,0,-1,0, -(r+l)/(r-l),-(t+b)/(t-b),0,1
+  ]);
+}
+function hslToRgb(h, s, l) {
+  const a = s * Math.min(l, 1-l);
+  const f = n => { const k = (n + h/30) % 12; return l - a * Math.max(-1, Math.min(k-3, 9-k, 1)); };
+  return [f(0), f(8), f(4)];
+}
+
+// --- init ---
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: true, alpha: false });
+if (!gl) { document.body.textContent = 'WebGL2 required'; throw ''; }
+
+const bgProg   = mkProgram(gl, 'bg-vs', 'bg-fs');
+const nodeProg = mkProgram(gl, 'node-vs', 'node-fs');
+const edgeProg = mkProgram(gl, 'edge-vs', 'edge-fs');
+const blurProg = mkProgram(gl, 'bg-vs', 'blur-fs');
+const blitProg = mkProgram(gl, 'bg-vs', 'blit-fs');
+const u_nodeMvp = gl.getUniformLocation(nodeProg, 'u_mvp');
+const u_edgeMvp = gl.getUniformLocation(edgeProg, 'u_mvp');
+const u_blurTex = gl.getUniformLocation(blurProg, 'u_tex');
+const u_blurDir = gl.getUniformLocation(blurProg, 'u_dir');
+const u_blitTex = gl.getUniformLocation(blitProg, 'u_tex');
+const u_blitInt = gl.getUniformLocation(blitProg, 'u_intensity');
+
+// shared quad: [-1,-1] to [1,1]
+const quad = new Float32Array([-1,-1, 1,-1, -1,1, 1,1]);
+
+// --- bg VAO ---
+const bgVao = gl.createVertexArray();
+gl.bindVertexArray(bgVao);
+const bgBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bgBuf);
+gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+// --- node VAO ---
+const nodeVao = gl.createVertexArray();
+gl.bindVertexArray(nodeVao);
+const nodeQuadBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, nodeQuadBuf);
+gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const nodeInstBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, nodeInstBuf);
+const N_STRIDE = 8 * 4; // offset.xy, radius, color.rgba, age
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 2, gl.FLOAT, false, N_STRIDE, 0);
+gl.vertexAttribDivisor(1, 1);
+gl.enableVertexAttribArray(2);
+gl.vertexAttribPointer(2, 1, gl.FLOAT, false, N_STRIDE, 8);
+gl.vertexAttribDivisor(2, 1);
+gl.enableVertexAttribArray(3);
+gl.vertexAttribPointer(3, 4, gl.FLOAT, false, N_STRIDE, 12);
+gl.vertexAttribDivisor(3, 1);
+gl.enableVertexAttribArray(4);
+gl.vertexAttribPointer(4, 1, gl.FLOAT, false, N_STRIDE, 28);
+gl.vertexAttribDivisor(4, 1);
+
+// --- edge VAO ---
+const edgeVao = gl.createVertexArray();
+gl.bindVertexArray(edgeVao);
+const edgeQuadBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, edgeQuadBuf);
+gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const edgeInstBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, edgeInstBuf);
+const E_STRIDE = 8 * 4; // p0.xy, p1.xy, color.rgb, alpha
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 2, gl.FLOAT, false, E_STRIDE, 0);
+gl.vertexAttribDivisor(1, 1);
+gl.enableVertexAttribArray(2);
+gl.vertexAttribPointer(2, 2, gl.FLOAT, false, E_STRIDE, 8);
+gl.vertexAttribDivisor(2, 1);
+gl.enableVertexAttribArray(3);
+gl.vertexAttribPointer(3, 3, gl.FLOAT, false, E_STRIDE, 16);
+gl.vertexAttribDivisor(3, 1);
+gl.enableVertexAttribArray(4);
+gl.vertexAttribPointer(4, 1, gl.FLOAT, false, E_STRIDE, 28);
+gl.vertexAttribDivisor(4, 1);
+
+gl.bindVertexArray(null);
+
+// --- FBOs for bloom ---
+function mkFBO(w, h) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { fbo, tex, w, h };
+}
+let sceneFB, blur1, blur2;
+function initFBOs() {
+  sceneFB = mkFBO(canvas.width, canvas.height);
+  const bw = Math.floor(canvas.width / 4), bh = Math.floor(canvas.height / 4);
+  blur1 = mkFBO(bw, bh);
+  blur2 = mkFBO(bw, bh);
+}
+
+// --- camera ---
+const cam = { x: 0, y: 0, zoom: 1.0 };
+let drag = null;
+
+function mvp() {
+  const w = canvas.clientWidth / cam.zoom;
+  const h = canvas.clientHeight / cam.zoom;
+  return mat4Ortho(cam.x - w/2, cam.x + w/2, cam.y - h/2, cam.y + h/2);
+}
+
+// --- git log parser ---
+function parseGitLog(text) {
+  const lines = text.split('\n');
+  const commits = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!lines[i].trim()) { i++; continue; }
+    const parts = lines[i].split('|');
+    if (parts.length < 4) { i++; continue; }
+    const commit = {
+      timestamp: parseInt(parts[0]),
+      author: parts[1],
+      hash: parts[2],
+      message: parts.slice(3).join('|'),
+      actions: []
+    };
+    i++;
+    while (i < lines.length && lines[i].trim()) {
+      const line = lines[i];
+      const action = line[0];
+      const path = line.substring(1).trim();
+      if (path && 'AMD'.includes(action)) {
+        commit.actions.push({ type: action, path });
+      }
+      i++;
+    }
+    if (commit.actions.length > 0) commits.push(commit);
+  }
+  return commits;
+}
+
+function buildTreeFromCommits(commits, upTo) {
+  const tree = { name: '', children: new Map(), isDir: true };
+  for (let c = 0; c < upTo; c++) {
+    for (const act of commits[c].actions) {
+      const segs = act.path.split('/');
+      let node = tree;
+      for (let j = 0; j < segs.length; j++) {
+        const name = segs[j];
+        const isFile = j === segs.length - 1;
+        if (!node.children.has(name)) {
+          node.children.set(name, {
+            name, children: new Map(), isDir: !isFile,
+            ext: isFile ? name.split('.').pop().toLowerCase() : '',
+            deleted: false
+          });
+        }
+        const child = node.children.get(name);
+        if (act.type === 'D' && isFile) child.deleted = true;
+        if (act.type === 'A' && isFile) child.deleted = false;
+        node = child;
+      }
+    }
+  }
+  return tree;
+}
+
+// --- color from file extension ---
+function extToColor(ext) {
+  if (!ext) return [0.6, 0.6, 0.6];
+  let h = 0;
+  for (let i = 0; i < ext.length; i++) h = ((h << 5) - h + ext.charCodeAt(i)) | 0;
+  return hslToRgb(Math.abs(h) % 360, 0.65, 0.55);
+}
+
+// --- radial tree layout ---
+function layoutTree(root) {
+  const nodes = [];
+  const edges = [];
+
+  function leafCount(n) {
+    if (n._lc !== undefined) return n._lc;
+    const kids = [...n.children.values()].filter(c => !c.deleted);
+    n._lc = kids.length === 0 ? 1 : kids.reduce((s, c) => s + leafCount(c), 0);
+    return n._lc;
+  }
+
+  // root
+  nodes.push({
+    x: 0, y: 0, r: 8, col: [1.0, 0.7, 0.3, 1], birth: 0,
+    isDir: true, parentIdx: -1, vx: 0, vy: 0, path: ''
+  });
+
+  function lay(node, depth, aStart, aEnd, px, py, pIdx, prefix) {
+    const kids = [...node.children.values()].filter(c => !c.deleted);
+    const dirs = kids.filter(c => c.isDir);
+    const files = kids.filter(c => !c.isDir);
+
+    // files: tagged with parent dir (shell positions computed by physics)
+    for (const f of files) {
+      const col = extToColor(f.ext);
+      const path = prefix ? prefix + '/' + f.name : f.name;
+      nodes.push({
+        x: px, y: py, r: 4, col: [...col, 1], birth: depth * 0.04,
+        isDir: false, dirIdx: pIdx, path
+      });
+    }
+
+    // directories: radial layout with long edges
+    if (dirs.length === 0) return;
+    const dirTotal = dirs.reduce((s, c) => s + leafCount(c), 0);
+    let angle = aStart;
+
+    for (const c of dirs) {
+      const lc = leafCount(c);
+      const span = (aEnd - aStart) * lc / dirTotal;
+      const mid = angle + span / 2;
+      const edgeLen = 80 + Math.sqrt(lc) * 25;
+      const x = px + Math.cos(mid) * edgeLen;
+      const y = py + Math.sin(mid) * edgeLen;
+
+      const idx = nodes.length;
+      const dirPath = prefix ? prefix + '/' + c.name : c.name;
+      nodes.push({
+        x, y, r: 6, col: [0.8, 0.6, 0.3, 1], birth: depth * 0.04,
+        isDir: true, parentIdx: pIdx, vx: 0, vy: 0, lc, path: dirPath
+      });
+      edges.push([pIdx, idx]);
+
+      lay(c, depth + 1, angle, angle + span, x, y, idx, dirPath);
+      angle += span;
+    }
+  }
+
+  lay(root, 1, 0, Math.PI * 2, 0, 0, 0, '');
+  return { nodes, edges };
+}
+
+// --- force-directed physics ---
+function recomputeLeafCounts() {
+  for (const i of _dirIdx) nodes[i].lc = 0;
+  // each file increments every ancestor's lc
+  for (const n of nodes) {
+    if (n.isDir || n.deleted) continue;
+    let cur = n.dirIdx;
+    while (cur >= 0) { nodes[cur].lc++; cur = nodes[cur].parentIdx; }
+  }
+  for (const i of _dirIdx) nodes[i].lc = Math.max(1, nodes[i].lc);
+}
+
+function computeClusterRadii() {
+  recomputeLeafCounts();
+  const counts = new Map();
+  for (const n of nodes) {
+    if (!n.isDir && !n.deleted) counts.set(n.dirIdx, (counts.get(n.dirIdx)||0)+1);
+  }
+  for (const [di, count] of counts) {
+    const sp = 13;
+    let shell = 1, placed = 0;
+    while (placed < count) {
+      const r = 10 + shell * sp;
+      placed += Math.min(Math.max(1, Math.floor(2*Math.PI*r/sp)), count-placed);
+      shell++;
+    }
+    nodes[di].cr = 10 + (shell-1)*sp + 6;
+  }
+}
+
+let _dirIdx = []; // cached dir indices
+let alpha = 1.0;  // annealing temperature: starts hot, cools to frozen
+
+function physicsStep(cool) {
+  // spring: dirs toward parent (full strength, gated by maturity only)
+  for (const i of _dirIdx) {
+    const n = nodes[i];
+    if (n.deleted || n.parentIdx < 0) continue;
+    const mat = Math.min(1, (n.physAge || 0) / 180);
+    const p = nodes[n.parentIdx];
+    const dx = n.x - p.x, dy = n.y - p.y;
+    const d = Math.sqrt(dx*dx + dy*dy) || 0.001;
+    const target = 80 + Math.sqrt(n.lc || 1) * 25;
+    const f = (d - target) * 0.03 * mat;
+    const fx = (dx/d)*f, fy = (dy/d)*f;
+    n.vx -= fx; n.vy -= fy;
+    p.vx += fx*0.3; p.vy += fy*0.3;
+  }
+
+  // dir repulsion — ALWAYS full strength (not scaled by alpha)
+  // skip ancestor/descendant pairs (like gource)
+  for (let i = 0; i < _dirIdx.length; i++) {
+    const ai = _dirIdx[i];
+    const a = nodes[ai];
+    if (a.deleted) continue;
+    const ar = a.cr || 20;
+    const matA = Math.min(1, (a.physAge || 0) / 180);
+    for (let j = i+1; j < _dirIdx.length; j++) {
+      const bi = _dirIdx[j];
+      const b = nodes[bi];
+      if (b.deleted) continue;
+      let skip = false;
+      for (let c = bi; c >= 0; c = nodes[c].parentIdx) { if (c === ai) { skip = true; break; } }
+      if (!skip) for (let c = ai; c >= 0; c = nodes[c].parentIdx) { if (c === bi) { skip = true; break; } }
+      if (skip) continue;
+      const dx = b.x-a.x, dy = b.y-a.y;
+      const d = Math.sqrt(dx*dx+dy*dy) || 0.001;
+      const minDist = ar + (b.cr || 20) + 30;
+      if (d < minDist) {
+        const matB = Math.min(1, (b.physAge || 0) / 180);
+        const baseF = (minDist-d) * 0.015 / d;
+        // asymmetric: settled nodes push new ones hard,
+        // new nodes nudge settled ones gently
+        a.vx -= dx * baseF * (0.15 + 0.85 * matB); a.vy -= dy * baseF * (0.15 + 0.85 * matB);
+        b.vx += dx * baseF * (0.15 + 0.85 * matA); b.vy += dy * baseF * (0.15 + 0.85 * matA);
+      }
+    }
+  }
+
+  // centering on root, gentle outward push on everything else
+  const root = nodes[0];
+  for (const i of _dirIdx) {
+    const n = nodes[i];
+    if (n.deleted) continue;
+    if (n.parentIdx < 0) {
+      n.vx -= n.x * 0.005; n.vy -= n.y * 0.005;
+    } else {
+      // leaf dirs push away from root — stretches the tree taut from the tips
+      const hasChildDir = _dirIdx.some(j => !nodes[j].deleted && nodes[j].parentIdx === i);
+      if (!hasChildDir) {
+        const mat = Math.min(1, (n.physAge || 0) / 180);
+        const push = 0.05 + (1 - mat) * 0.05; // 0.1 when new, 0.05 when settled
+        const dx = n.x - root.x, dy = n.y - root.y;
+        const d = Math.sqrt(dx*dx + dy*dy) || 0.001;
+        n.vx += (dx/d) * push; n.vy += (dy/d) * push;
+      }
+    }
+  }
+
+  // integrate: alpha controls velocity cap — slow drift when cold, active when hot
+  const maxV = 0.5 + 7 * alpha;
+  for (const i of _dirIdx) {
+    const n = nodes[i];
+    if (n.deleted) continue;
+    n.vx *= 0.85; n.vy *= 0.85;
+    const speed = Math.sqrt(n.vx*n.vx + n.vy*n.vy);
+    if (speed > maxV) { n.vx *= maxV/speed; n.vy *= maxV/speed; }
+    n.x += n.vx; n.y += n.vy;
+  }
+
+  // age up dir nodes (maturity ramp)
+  for (const i of _dirIdx) {
+    const n = nodes[i];
+    if (!n.deleted) n.physAge = (n.physAge || 0) + 1;
+  }
+
+  if (cool) alpha *= 0.997;
+
+  // reposition files in shells around their parent dir
+  const filesByDir = new Map();
+  for (const n of nodes) {
+    if (n.isDir || n.deleted) continue;
+    if (!filesByDir.has(n.dirIdx)) filesByDir.set(n.dirIdx, []);
+    filesByDir.get(n.dirIdx).push(n);
+  }
+  for (const [di, files] of filesByDir) {
+    const dir = nodes[di];
+    const spacing = 13;
+    let shell = 1, placed = 0;
+    while (placed < files.length) {
+      const r = 10 + shell * spacing;
+      const max = Math.max(1, Math.floor(2*Math.PI*r/spacing));
+      const count = Math.min(max, files.length - placed);
+      for (let j = 0; j < count; j++) {
+        const a = (2*Math.PI*j)/count;
+        files[placed].x = dir.x + Math.cos(a)*r;
+        files[placed].y = dir.y + Math.sin(a)*r;
+        placed++;
+      }
+      shell++;
+    }
+  }
+}
+
+// --- test scene ---
+function makeTestTree() {
+  const root = { name:'', children:new Map(), isDir:true, deleted:false, ext:'' };
+  function addDir(parent, name, fileNames) {
+    const dir = { name, children:new Map(), isDir:true, deleted:false, ext:'' };
+    for (const fn of fileNames) {
+      dir.children.set(fn, {
+        name:fn, children:new Map(), isDir:false,
+        ext:fn.split('.').pop().toLowerCase(), deleted:false
+      });
+    }
+    parent.children.set(name, dir);
+    return dir;
+  }
+  const src = addDir(root, 'src', [
+    'main.cpp','app.cpp','app.h','utils.cpp','utils.h',
+    'config.cpp','config.h','render.cpp','render.h',
+    'shader.cpp','shader.h','window.cpp'
+  ]);
+  addDir(src, 'core', ['engine.cpp','engine.h','math.cpp','math.h','types.h','logger.cpp']);
+  addDir(root, 'data', ['config.json','theme.css','icon.svg']);
+  addDir(root, 'test', ['test_main.cpp','test_utils.cpp','test_render.cpp','test_config.cpp']);
+  addDir(root, 'docs', ['README.md','INSTALL.md','CHANGELOG.md']);
+  for (const fn of ['Makefile','README.md','.gitignore','LICENSE']) {
+    root.children.set(fn, {
+      name:fn, children:new Map(), isDir:false,
+      ext:fn.split('.').pop().toLowerCase(), deleted:false
+    });
+  }
+  return root;
+}
+
+// --- scene state ---
+let nodes = [];
+let edges = [];
+let t0 = performance.now() / 1000;
+
+function autoZoom() {
+  if (nodes.length < 2) return;
+  let x0=Infinity, x1=-Infinity, y0=Infinity, y1=-Infinity;
+  for (const n of nodes) {
+    x0=Math.min(x0,n.x); x1=Math.max(x1,n.x);
+    y0=Math.min(y0,n.y); y1=Math.max(y1,n.y);
+  }
+  cam.x=(x0+x1)/2; cam.y=(y0+y1)/2;
+  const pad=100;
+  cam.zoom = Math.min(
+    canvas.clientWidth/(x1-x0+pad*2),
+    canvas.clientHeight/(y1-y0+pad*2)
+  );
+}
+
+function loadTree(tree, warmup = 600) {
+  const result = layoutTree(tree);
+  nodes = result.nodes;
+  edges = result.edges;
+  _dirIdx = [];
+  for (let i = 0; i < nodes.length; i++) if (nodes[i].isDir) _dirIdx.push(i);
+  computeClusterRadii();
+  alpha = 1.0;
+  t0 = performance.now() / 1000;
+  for (let i = 0; i < warmup; i++) physicsStep(false);
+  autoZoom();
+}
+
+// --- timeline state ---
+let allCommits = [];
+let commitIdx = 0;
+let playing = false;
+let playSpeed = 5;
+let playAccum = 0;
+let pathToNode = new Map();
+const slider = document.getElementById('slider');
+const tlInfo = document.getElementById('tl-info');
+const tlDate = document.getElementById('tl-date');
+
+function updateTimeline() {
+  if (allCommits.length === 0) return;
+  const c = allCommits[Math.max(0, commitIdx - 1)];
+  tlInfo.textContent = `commit ${commitIdx} / ${allCommits.length}`;
+  if (c) {
+    const d = new Date(c.timestamp * 1000);
+    tlDate.textContent = `${d.toLocaleDateString()} — ${c.author}`;
+  }
+}
+
+function initScene() {
+  nodes = [];
+  edges = [];
+  _dirIdx = [];
+  pathToNode = new Map();
+  commitIdx = 0;
+  t0 = performance.now() / 1000;
+  alpha = 1.0;
+  // root node
+  nodes.push({
+    x: 0, y: 0, r: 8, col: [1.0, 0.7, 0.3, 1], birth: 0,
+    isDir: true, parentIdx: -1, vx: 0, vy: 0, lc: 0
+  });
+  _dirIdx.push(0);
+  pathToNode.set('', 0);
+}
+
+// deterministic hash for consistent dir placement (like gource's vec2Hash)
+function pathHash(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  return h;
+}
+
+function ensureDir(segs) {
+  let parentIdx = 0;
+  for (let j = 0; j < segs.length - 1; j++) {
+    const dirPath = segs.slice(0, j + 1).join('/');
+    if (pathToNode.has(dirPath)) {
+      const existing = nodes[pathToNode.get(dirPath)];
+      if (existing.deleted) {
+        existing.deleted = false;
+        existing.birth = performance.now() / 1000 - t0;
+      }
+    } else {
+      const parent = nodes[parentIdx];
+      const dist = 105; // match spring target (80 + sqrt(1)*25)
+      // deterministic angle from path hash + parent-grandparent direction
+      const hash = pathHash(dirPath);
+      let angle = (hash & 0xffff) / 0xffff * Math.PI * 2;
+      if (parent.parentIdx >= 0) {
+        // bias outward along parent's direction from grandparent
+        const gp = nodes[parent.parentIdx];
+        const outAngle = Math.atan2(parent.y - gp.y, parent.x - gp.x);
+        angle = outAngle + (angle - Math.PI) * 0.6; // spread ±108° around outward dir
+      }
+      const idx = nodes.length;
+      nodes.push({
+        x: parent.x + Math.cos(angle) * dist,
+        y: parent.y + Math.sin(angle) * dist,
+        r: 6, col: [0.8, 0.6, 0.3, 1],
+        birth: performance.now() / 1000 - t0,
+        isDir: true, parentIdx, vx: 0, vy: 0, lc: 1
+      });
+      edges.push([parentIdx, idx]);
+      _dirIdx.push(idx);
+      pathToNode.set(dirPath, idx);
+    }
+    parentIdx = pathToNode.get(dirPath);
+  }
+  return parentIdx;
+}
+
+function applyCommit(commit) {
+  const now = performance.now() / 1000 - t0;
+  for (const act of commit.actions) {
+    const segs = act.path.split('/');
+    const parentIdx = ensureDir(segs);
+
+    if (act.type === 'A' || act.type === 'M') {
+      if (!pathToNode.has(act.path)) {
+        // new file
+        const ext = segs[segs.length - 1].split('.').pop().toLowerCase();
+        const col = extToColor(ext);
+        const idx = nodes.length;
+        nodes.push({
+          x: nodes[parentIdx].x, y: nodes[parentIdx].y,
+          r: 4, col: [...col, 1], birth: now,
+          isDir: false, dirIdx: parentIdx, deleted: false
+        });
+        pathToNode.set(act.path, idx);
+      } else {
+        // file exists — undelete or pulse on modify
+        const n = nodes[pathToNode.get(act.path)];
+        if (n.deleted) { n.deleted = false; n.birth = now; }
+        else n.touchTime = now; // bloom pulse (not full birth)
+      }
+    } else if (act.type === 'D') {
+      if (pathToNode.has(act.path)) {
+        nodes[pathToNode.get(act.path)].deleted = true;
+      }
+    }
+
+  }
+  // clean up empty dirs (git doesn't track them)
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const i of _dirIdx) {
+      const n = nodes[i];
+      if (n.deleted || n.parentIdx < 0) continue;
+      const hasFile = nodes.some(o => !o.isDir && !o.deleted && o.dirIdx === i);
+      const hasSubdir = nodes.some(o => o.isDir && !o.deleted && o.parentIdx === i);
+      if (!hasFile && !hasSubdir) { n.deleted = true; changed = true; }
+    }
+  }
+
+  // reheat so new nodes settle
+  alpha = Math.max(alpha, 0.5);
+  computeClusterRadii();
+}
+
+function scrubTo(idx) {
+  idx = Math.max(0, Math.min(idx, allCommits.length));
+  if (idx <= commitIdx || (idx - commitIdx) > 50) {
+    // rebuild: use proper radial layout + full physics
+    const tree = buildTreeFromCommits(allCommits, idx);
+    loadTree(tree, 600);
+    // reconstruct pathToNode from node paths for future incremental use
+    pathToNode = new Map();
+    for (let i = 0; i < nodes.length; i++) {
+      if (nodes[i].path !== undefined) pathToNode.set(nodes[i].path, i);
+    }
+  } else {
+    // small forward jump: apply incrementally
+    while (commitIdx < idx) applyCommit(allCommits[commitIdx++]);
+  }
+  commitIdx = idx;
+  slider.value = idx;
+  updateTimeline();
+}
+
+function stepForward() {
+  if (commitIdx >= allCommits.length) { playing = false; return; }
+  applyCommit(allCommits[commitIdx++]);
+  slider.value = commitIdx;
+  updateTimeline();
+}
+
+function loadData(text) {
+  allCommits = parseGitLog(text);
+  if (allCommits.length === 0) return;
+  initScene();
+  slider.min = 0;
+  slider.max = allCommits.length;
+  slider.value = 0;
+  document.getElementById('timeline').style.display = 'block';
+  playing = true;
+  playAccum = 0;
+  updateTimeline();
+}
+
+// --- resize ---
+function resize() {
+  const dpr = devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * dpr;
+  canvas.height = canvas.clientHeight * dpr;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  initFBOs();
+}
+resize();
+addEventListener('resize', resize);
+
+// load test scene
+loadTree(makeTestTree());
+
+// --- render ---
+function render() {
+  const now = performance.now() / 1000 - t0;
+  const m = mvp();
+
+  // timeline auto-play
+  if (playing && allCommits.length > 0) {
+    playAccum += 1/60;
+    while (playAccum >= 1/playSpeed) {
+      playAccum -= 1/playSpeed;
+      stepForward();
+      if (!playing) break;
+    }
+  }
+
+  // physics: steady warmth during playback, anneal when stopped
+  if (playing) {
+    alpha = Math.max(alpha, 0.6);
+    for (let i = 0; i < 3; i++) physicsStep(false);
+  } else {
+    physicsStep(true);
+  }
+
+  // smooth camera follow during playback
+  if (playing && nodes.length > 1) {
+    let x0=Infinity, x1=-Infinity, y0=Infinity, y1=-Infinity;
+    for (const n of nodes) {
+      if (n.deleted) continue;
+      x0=Math.min(x0,n.x); x1=Math.max(x1,n.x);
+      y0=Math.min(y0,n.y); y1=Math.max(y1,n.y);
+    }
+    if (x0 < Infinity) {
+      const tx = (x0+x1)/2, ty = (y0+y1)/2;
+      const pad = 120;
+      const tz = Math.min(canvas.clientWidth/(x1-x0+pad*2), canvas.clientHeight/(y1-y0+pad*2));
+      cam.x += (tx - cam.x) * 0.03;
+      cam.y += (ty - cam.y) * 0.03;
+      cam.zoom += (tz - cam.zoom) * 0.03;
+    }
+  }
+
+  // ── scene → FBO ──
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFB.fbo);
+  gl.viewport(0, 0, sceneFB.w, sceneFB.h);
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  gl.disable(gl.BLEND);
+  gl.useProgram(bgProg);
+  gl.bindVertexArray(bgVao);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  if (nodes.length > 0) {
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+
+    // edges
+    if (edges.length > 0) {
+      const eData = new Float32Array(edges.length * 8);
+      let ve = 0;
+      for (const [a, b] of edges) {
+        const na = nodes[a], nb = nodes[b];
+        if (na.deleted || nb.deleted) continue;
+        const age = now - nb.birth;
+        if (age < 0) continue;
+        const o = ve * 8;
+        eData[o] = na.x; eData[o+1] = na.y;
+        eData[o+2] = nb.x; eData[o+3] = nb.y;
+        // color: heat (yellow↔orange) + maturity (bright→dim)
+        const heat = Math.min(1, alpha * 1.5);
+        const mat = Math.min(1, (nb.physAge || 0) / 300);
+        const bright = 1.2 - mat * 0.5; // new=1.2, mature=0.7
+        eData[o+4] = (0.7 + heat * 0.3) * bright;
+        eData[o+5] = (0.35 + heat * 0.5) * bright;
+        eData[o+6] = (0.1 + heat * 0.2) * bright;
+        eData[o+7] = Math.min(1, age) * 0.6;
+        ve++;
+      }
+      if (ve > 0) {
+        gl.useProgram(edgeProg);
+        gl.uniformMatrix4fv(u_edgeMvp, false, m);
+        gl.bindBuffer(gl.ARRAY_BUFFER, edgeInstBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, eData.subarray(0, ve*8), gl.DYNAMIC_DRAW);
+        gl.bindVertexArray(edgeVao);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, ve);
+      }
+    }
+
+    // nodes
+    const nData = new Float32Array(nodes.length * 8);
+    let vn = 0;
+    for (const n of nodes) {
+      if (n.deleted) continue;
+      if (!n.isDir && nodes[n.dirIdx].deleted) continue;
+      const age = now - n.birth;
+      if (age < -0.1) continue;
+      const o = vn * 8;
+      let r = n.r;
+      if (n.touchTime && (now - n.touchTime) < 1.2) {
+        r *= 1 + (1 - (now - n.touchTime) / 1.2) * 2.0;
+      }
+      nData[o] = n.x; nData[o+1] = n.y; nData[o+2] = r;
+      nData[o+3] = n.col[0]; nData[o+4] = n.col[1];
+      nData[o+5] = n.col[2]; nData[o+6] = n.col[3];
+      nData[o+7] = Math.max(0, age);
+      vn++;
+    }
+    gl.useProgram(nodeProg);
+    gl.uniformMatrix4fv(u_nodeMvp, false, m);
+    gl.bindBuffer(gl.ARRAY_BUFFER, nodeInstBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, nData.subarray(0, vn*8), gl.DYNAMIC_DRAW);
+    gl.bindVertexArray(nodeVao);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, vn);
+  }
+
+  // ── bloom ──
+  gl.disable(gl.BLEND);
+  gl.bindVertexArray(bgVao);
+  gl.activeTexture(gl.TEXTURE0);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, blur1.fbo);
+  gl.viewport(0, 0, blur1.w, blur1.h);
+  gl.useProgram(blitProg);
+  gl.bindTexture(gl.TEXTURE_2D, sceneFB.tex);
+  gl.uniform1i(u_blitTex, 0);
+  gl.uniform1f(u_blitInt, 1.0);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  gl.useProgram(blurProg);
+  gl.uniform1i(u_blurTex, 0);
+  for (let pass = 0; pass < 2; pass++) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, blur2.fbo);
+    gl.viewport(0, 0, blur2.w, blur2.h);
+    gl.bindTexture(gl.TEXTURE_2D, blur1.tex);
+    gl.uniform2f(u_blurDir, 1.0/blur1.w, 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, blur1.fbo);
+    gl.viewport(0, 0, blur1.w, blur1.h);
+    gl.bindTexture(gl.TEXTURE_2D, blur2.tex);
+    gl.uniform2f(u_blurDir, 0, 1.0/blur2.h);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(blitProg);
+  gl.bindTexture(gl.TEXTURE_2D, sceneFB.tex);
+  gl.uniform1f(u_blitInt, 1.0);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE);
+  gl.bindTexture(gl.TEXTURE_2D, blur1.tex);
+  gl.uniform1f(u_blitInt, 0.25);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+// --- timeline controls ---
+slider.addEventListener('input', () => {
+  playing = false;
+  const target = parseInt(slider.value);
+  scrubTo(target);
+});
+addEventListener('keydown', e => {
+  if (e.code === 'Space' && allCommits.length > 0) {
+    e.preventDefault();
+    playing = !playing;
+    playAccum = 0;
+  }
+  if (e.code === 'Equal' || e.code === 'NumpadAdd') playSpeed = Math.min(30, playSpeed + 1);
+  if (e.code === 'Minus' || e.code === 'NumpadSubtract') playSpeed = Math.max(1, playSpeed - 1);
+});
+
+// --- UI: drag-drop on hover ---
+let dragCount = 0;
+document.addEventListener('dragenter', e => {
+  e.preventDefault(); dragCount++;
+  document.getElementById('drop').style.display = 'flex';
+});
+document.addEventListener('dragleave', () => {
+  if (--dragCount <= 0) {
+    dragCount = 0;
+    document.getElementById('drop').style.display = 'none';
+  }
+});
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault(); dragCount = 0;
+  document.getElementById('drop').style.display = 'none';
+  const file = e.dataTransfer.files[0];
+  if (file) file.text().then(loadData);
+});
+
+// --- interaction ---
+canvas.addEventListener('mousedown', e => {
+  drag = { sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y };
+});
+addEventListener('mousemove', e => {
+  if (!drag) return;
+  cam.x = drag.cx - (e.clientX - drag.sx) / cam.zoom;
+  cam.y = drag.cy + (e.clientY - drag.sy) / cam.zoom;
+});
+addEventListener('mouseup', () => drag = null);
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const f = e.deltaY > 0 ? 0.9 : 1.1;
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left - rect.width/2) / cam.zoom;
+  const my = -(e.clientY - rect.top - rect.height/2) / cam.zoom;
+  cam.x += mx * (1 - 1/f);
+  cam.y += my * (1 - 1/f);
+  cam.zoom *= f;
+}, { passive: false });
+</script>
+</body>
+</html>
