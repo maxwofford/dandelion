@@ -14,6 +14,12 @@ canvas { display: block; width: 100vw; height: 100vh; }
 <div id="drop" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:10;background:rgba(0,0,0,0.7)">
   <div style="padding:60px;border:2px dashed #555;border-radius:16px;color:#aaa;font:20px monospace">drop .log file</div>
 </div>
+<div id="url-bar" style="position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:5;display:flex;gap:8px;align-items:center">
+  <input id="url-input" type="text" placeholder="paste github url…" spellcheck="false"
+    style="width:320px;padding:6px 12px;background:rgba(30,25,20,0.8);border:1px solid #554;border-radius:8px;color:#cca;font:13px monospace;outline:none">
+  <button id="url-go" style="padding:6px 14px;background:#554;border:none;border-radius:8px;color:#cca;font:13px monospace;cursor:pointer">go</button>
+  <span id="url-status" style="color:#887;font:12px monospace"></span>
+</div>
 <div id="timeline" style="position:fixed;bottom:0;left:0;right:0;padding:8px 20px 12px;z-index:5;display:none">
   <input type="range" id="slider" min="0" max="0" value="0" style="width:100%;cursor:pointer;accent-color:#b08040">
   <div style="display:flex;justify-content:space-between;margin-top:4px">
@@ -1170,6 +1176,7 @@ slider.addEventListener('input', () => {
   scrubTo(target);
 });
 addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
   if (e.code === 'Space' && allCommits.length > 0) {
     e.preventDefault();
     playing = !playing;
@@ -1183,6 +1190,43 @@ addEventListener('keydown', e => {
     playSpeed = Math.max(1, playSpeed > 10 ? Math.ceil(playSpeed / 1.5) : playSpeed - 1);
     updateTimeline();
   }
+});
+
+// --- UI: url input ---
+const urlInput = document.getElementById('url-input');
+const urlGo = document.getElementById('url-go');
+const urlStatus = document.getElementById('url-status');
+const GLOAM_SERVER = 'http://localhost:3000';
+
+async function loadFromUrl() {
+  const url = urlInput.value.trim();
+  if (!url) return;
+  urlGo.disabled = true;
+  urlStatus.textContent = 'cloning…';
+  try {
+    const res = await fetch(`${GLOAM_SERVER}/generate-log`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    if (!res.ok) {
+      urlStatus.textContent = `error: ${res.status}`;
+      return;
+    }
+    const text = await res.text();
+    urlStatus.textContent = '';
+    document.getElementById('url-bar').style.display = 'none';
+    loadData(text);
+  } catch (e) {
+    urlStatus.textContent = 'server unreachable';
+  } finally {
+    urlGo.disabled = false;
+  }
+}
+
+urlGo.addEventListener('click', loadFromUrl);
+urlInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') loadFromUrl();
 });
 
 // --- UI: drag-drop on hover ---
@@ -1202,7 +1246,10 @@ document.addEventListener('drop', e => {
   e.preventDefault(); dragCount = 0;
   document.getElementById('drop').style.display = 'none';
   const file = e.dataTransfer.files[0];
-  if (file) file.text().then(loadData);
+  if (file) {
+    document.getElementById('url-bar').style.display = 'none';
+    file.text().then(loadData);
+  }
 });
 
 // --- interaction ---
