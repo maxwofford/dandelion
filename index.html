@@ -1229,6 +1229,12 @@ urlInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') loadFromUrl();
 });
 
+// --- URL param: ?url=... auto-loads ---
+{
+  const p = new URLSearchParams(location.search).get('url');
+  if (p) { urlInput.value = p; loadFromUrl(); }
+}
+
 // --- UI: drag-drop on hover ---
 let dragCount = 0;
 document.addEventListener('dragenter', e => {
