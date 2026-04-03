@@ -695,11 +695,15 @@ function physicsStep(cool) {
 
   // 6. integrate: pos += accel * dt — fixed dt like gource (1/60)
   const dt = 1.0 / 60.0;
+  const maxStep = 10.0; // clamp displacement to prevent divergence on large repos
   for (const i of _dirIdx) {
     const n = nodes[i];
     if (n.deleted) continue;
-    n.x += n.ax * dt;
-    n.y += n.ay * dt;
+    let dx = n.ax * dt, dy = n.ay * dt;
+    const step = Math.sqrt(dx*dx + dy*dy);
+    if (step > maxStep) { dx *= maxStep/step; dy *= maxStep/step; }
+    n.x += dx;
+    n.y += dy;
     n.physAge = (n.physAge || 0) + 1;
   }
 
@@ -714,10 +718,10 @@ function physicsStep(cool) {
   }
   for (const [di, files] of filesByDir) {
     const dir = nodes[di];
-    const spacing = 13;
+    const spacing = 10;
     let shell = 1, placed = 0;
     while (placed < files.length) {
-      const r = 10 + shell * spacing;
+      const r = 5 + shell * spacing;
       const max = Math.max(1, Math.floor(2*Math.PI*r/spacing));
       const count = Math.min(max, files.length - placed);
       for (let j = 0; j < count; j++) {
