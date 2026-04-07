@@ -810,14 +810,21 @@ let pathToNode = new Map();
 const slider = document.getElementById('slider');
 const tlInfo = document.getElementById('tl-info');
 const tlDate = document.getElementById('tl-date');
+let repoUrl = '';
 
 function updateTimeline() {
   if (allCommits.length === 0) return;
   const c = allCommits[Math.max(0, commitIdx - 1)];
-  tlInfo.textContent = `commit ${commitIdx} / ${allCommits.length}  [${playSpeed}x]`;
   if (c) {
+    const short = c.hash.slice(0, 6);
+    const hashStr = repoUrl
+      ? `<a href="${repoUrl.replace(/\.git$/, '')}/commit/${c.hash}" target="_blank" style="color:#997;text-decoration:none">${short}</a>`
+      : short;
+    tlInfo.innerHTML = `${hashStr} · commit ${commitIdx} / ${allCommits.length}  [${playSpeed}x]`;
     const d = new Date(c.timestamp * 1000);
     tlDate.textContent = `${d.toLocaleDateString()} — ${c.author}`;
+  } else {
+    tlInfo.textContent = `commit ${commitIdx} / ${allCommits.length}  [${playSpeed}x]`;
   }
 }
 
@@ -1220,6 +1227,7 @@ async function loadFromUrl() {
     const text = await res.text();
     urlStatus.textContent = '';
     document.getElementById('url-bar').style.display = 'none';
+    repoUrl = url;
     loadData(text);
   } catch (e) {
     urlStatus.textContent = 'server unreachable';
